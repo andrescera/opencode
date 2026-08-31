@@ -16,7 +16,12 @@ const Body = Schema.Struct({
   ...Struct.omit(AnthropicMessages.AnthropicMessagesBody.fields, ["model", "stream"]),
   anthropic_version: Schema.Literal(VERSION),
   anthropic_beta: Schema.optional(Schema.Array(Schema.String)),
-})
+}).check(
+  Schema.makeFilter(
+    (body) =>
+      body.messages.flatMap((message) => message.content.map(mediaIssue)).find((issue) => issue !== undefined) ?? true,
+  ),
+)
 const Event = Schema.Struct({
   chunk: Schema.optional(Schema.Struct({ bytes: Schema.String })),
   exception: Schema.optional(
@@ -74,6 +79,25 @@ export const protocol = Protocol.make({
     }),
   },
 })
+
+function mediaIssue(
+  block: AnthropicMessages.AnthropicMessagesBody["messages"][number]["content"][number],
+): string | undefined {
+  if (block.type === "tool_result")
+    return typeof block.content === "string"
+      ? undefined
+      : block.content.map(mediaIssue).find((issue) => issue !== undefined)
+  if (block.type !== "image" && block.type !== "document") return
+  if (block.source.type === "url" || block.source.type === "file")
+    return "Bedrock Messages does not support URL or file-ID media sources"
+  if (
+    block.type === "image" &&
+    !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(block.source.media_type)
+  )
+    return "Bedrock Messages requires a JPEG, PNG, WebP, or GIF image"
+  if (block.source.type === "base64" && Encoding.decodeBase64(block.source.data)._tag === "Failure")
+    return "Bedrock Messages media data must be valid base64"
+}
 
 export const route = Route.make({
   id: ID,

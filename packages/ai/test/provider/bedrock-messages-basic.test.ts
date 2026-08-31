@@ -3,9 +3,9 @@ import { fromUtf8, toUtf8 } from "@smithy/util-utf8"
 import { expect } from "bun:test"
 import { Effect } from "effect"
 import { LLM, LLMRequest, Message } from "../../src/index.js"
-import { LLMClient } from "../../src/route/client.js"
+import { LLMClient, compileRequest } from "../../src/route/client.js"
 import { AmazonBedrock } from "../../src/providers/index.js"
-import { testEffect } from "../lib/effect.js"
+import { it, testEffect } from "../lib/effect.js"
 import { dynamicResponse, fixedResponse } from "../lib/http.js"
 
 const codec = new EventStreamCodec(toUtf8, fromUtf8)
@@ -89,5 +89,65 @@ testEffect(
     ).pipe(Effect.flip)
     expect(error.reason.body).toContain("keep-original")
     expect(error.reason.http?.status).toBe(200)
+  }),
+)
+
+for (const mediaType of ["image/png", "application/pdf"]) {
+  for (const data of ["https://example.com/media", "invalid base64!"]) {
+    for (const role of ["user", "tool"] as const) {
+      it.effect(`rejects ${role} ${mediaType} with ${data}`, () =>
+        Effect.gen(function* () {
+          const error = yield* compileRequest(
+            LLM.request({
+              model: AmazonBedrock.configure({ apiKey: "test" }).messages("claude"),
+              messages:
+                role === "user"
+                  ? [Message.user({ type: "media", mediaType, data })]
+                  : [
+                      Message.tool({
+                        id: "call_1",
+                        name: "read",
+                        result: { type: "content", value: [{ type: "file", mime: mediaType, uri: data }] },
+                      }),
+                    ],
+            }),
+          ).pipe(Effect.flip)
+          expect(error.reason._tag).toBe("InvalidRequest")
+          expect(error.message).toContain("Bedrock Messages")
+        }),
+      )
+    }
+  }
+}
+
+it.effect("accepts inline image and document sources", () =>
+  Effect.gen(function* () {
+    const prepared = yield* compileRequest(
+      LLM.request({
+        model: AmazonBedrock.configure({ apiKey: "test" }).messages("claude"),
+        messages: [
+          Message.user([
+            { type: "media", mediaType: "image/png", data: "data:image/png;base64,AQID" },
+            { type: "media", mediaType: "application/pdf", data: "data:application/pdf;base64,AQID" },
+          ]),
+        ],
+      }),
+    )
+    expect(prepared.body.messages[0].content.map((block: { source: { type: string } }) => block.source.type)).toEqual([
+      "base64",
+      "base64",
+    ])
+  }),
+)
+
+it.effect("rejects Anthropic file IDs", () =>
+  Effect.gen(function* () {
+    const error = yield* compileRequest(
+      LLM.request({
+        model: AmazonBedrock.configure({ apiKey: "test" }).messages("claude"),
+        messages: [Message.user({ type: "media", mediaType: "image/png", data: "", metadata: { file_id: "file_1" } })],
+      }),
+    ).pipe(Effect.flip)
+    expect(error.message).toContain("file-ID")
   }),
 )
