@@ -151,3 +151,16 @@ it.effect("rejects Anthropic file IDs", () =>
     expect(error.message).toContain("file-ID")
   }),
 )
+
+it.effect("rejects unsupported image formats", () =>
+  Effect.gen(function* () {
+    const error = yield* compileRequest(
+      LLM.request({
+        model: AmazonBedrock.configure({ apiKey: "test" }).messages("claude"),
+        messages: [Message.user({ type: "media", mediaType: "image/svg+xml", data: "AQID" })],
+      }),
+    ).pipe(Effect.flip)
+    expect(error.reason._tag).toBe("InvalidRequest")
+    expect(error.message).toContain("JPEG, PNG, WebP, or GIF")
+  }),
+)

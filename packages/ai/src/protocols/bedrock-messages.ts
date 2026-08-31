@@ -87,7 +87,7 @@ function mediaIssue(
     return typeof block.content === "string"
       ? undefined
       : block.content.map(mediaIssue).find((issue) => issue !== undefined)
-  if (block.type !== "image" && block.type !== "document") return
+  if (block.type !== "image" && block.type !== "document") return undefined
   if (block.source.type === "url" || block.source.type === "file")
     return "Bedrock Messages does not support URL or file-ID media sources"
   if (
@@ -97,6 +97,7 @@ function mediaIssue(
     return "Bedrock Messages requires a JPEG, PNG, WebP, or GIF image"
   if (block.source.type === "base64" && Encoding.decodeBase64(block.source.data)._tag === "Failure")
     return "Bedrock Messages media data must be valid base64"
+  return undefined
 }
 
 export const route = Route.make({
