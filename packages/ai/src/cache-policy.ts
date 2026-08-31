@@ -40,6 +40,7 @@ const RESPECTS_INLINE_HINTS = new Set([
   "anthropic-messages",
   "google-vertex-messages",
   "bedrock-converse",
+  "bedrock-messages",
   "openrouter",
 ])
 

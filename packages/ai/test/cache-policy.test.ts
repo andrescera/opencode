@@ -126,6 +126,38 @@ describe("applyCachePolicy", () => {
     }),
   )
 
+  for (const fixture of [
+    { name: "default", cache: undefined, control: { type: "ephemeral" } },
+    { name: "auto", cache: "auto", control: { type: "ephemeral" } },
+    {
+      name: "explicit one-hour",
+      cache: { tools: true, system: true, messages: { tail: 1 }, ttlSeconds: 3600 },
+      control: { type: "ephemeral", ttl: "1h" },
+    },
+    { name: "disabled", cache: "none", control: undefined },
+  ] as const) {
+    it.effect(`Bedrock Messages respects ${fixture.name} caching`, () =>
+      Effect.gen(function* () {
+        const prepared = yield* compileRequest(
+          LLM.request({
+            model: AmazonBedrock.configure({ apiKey: "test" }).messages("anthropic.claude-opus-4-6-v1"),
+            system: "Stable instructions",
+            tools: [
+              { name: "lookup", description: "Look up a value", inputSchema: { type: "object", properties: {} } },
+            ],
+            prompt: "hello",
+            cache: fixture.cache,
+          }),
+        )
+        expect(prepared.body).toMatchObject({
+          tools: [{ name: "lookup", cache_control: fixture.control }],
+          system: [{ type: "text", text: "Stable instructions", cache_control: fixture.control }],
+          messages: [{ role: "user", content: [{ type: "text", text: "hello", cache_control: fixture.control }] }],
+        })
+      }),
+    )
+  }
+
   it.effect("'auto' is a no-op on Gemini (out-of-band caching protocol)", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(

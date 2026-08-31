@@ -1,9 +1,11 @@
-import type { RouteDefaultsInput } from "../route/client.js"
+import type { Route, RouteDefaultsInput } from "../route/client.js"
 import { Auth } from "../route/auth.js"
 import type { ProviderPackage } from "../provider-package.js"
 import { ProviderID, type ModelID } from "../schema/index.js"
 import * as BedrockConverse from "../protocols/bedrock-converse.js"
 import type { BedrockCredentials } from "../protocols/bedrock-converse.js"
+import { BedrockMessages } from "../protocols/bedrock-messages.js"
+import type { AnthropicMessages } from "../protocols/anthropic-messages.js"
 
 export const id = ProviderID.make("amazon-bedrock")
 
@@ -25,38 +27,40 @@ export interface Settings extends ProviderPackage.Settings {
   readonly region?: string
   readonly topP?: number
 }
-export const routes = [BedrockConverse.route]
+export const routes = [BedrockConverse.route, BedrockMessages.route]
 
 const bedrockBaseURL = (region: string) => `https://bedrock-runtime.${region}.amazonaws.com`
 
-const configuredRoute = (input: Config) => {
+const configuredRoute = <Body, Prepared>(route: Route<Body, Prepared>, input: Config) => {
   const { apiKey, credentials, region, baseURL, ...rest } = input
   const resolvedRegion = region ?? credentials?.region ?? "us-east-1"
-  return BedrockConverse.route.with({
+  return route.with({
     ...rest,
     provider: id,
-    providerMetadataKey: "bedrock",
+    providerMetadataKey: route.providerMetadataKey,
     endpoint: { baseURL: baseURL ?? bedrockBaseURL(resolvedRegion) },
     auth: apiKey === undefined ? BedrockConverse.sigV4Auth(credentials) : Auth.bearer(apiKey),
   })
 }
 
 export const configure = (input: Config = {}) => {
-  const route = configuredRoute(input)
+  const route = configuredRoute(BedrockConverse.route, input)
+  const messages = configuredRoute(BedrockMessages.route, input)
   return {
     id,
     model: (modelID: string | ModelID) => route.model({ id: modelID }),
+    messages: (modelID: string | ModelID) => messages.model<AnthropicMessages.ProviderOptionsInput>({ id: modelID }),
     configure,
   }
 }
 
 export const provider = configure()
-export const model: ProviderPackage.Definition<Settings>["model"] = (modelID, settings) => {
+const config = (settings: Settings): Config => {
   if (settings.auth === "bearer" && settings.apiKey === undefined)
     throw new Error("Amazon Bedrock bearer auth requires apiKey")
   if (settings.auth === "sigv4" && settings.apiKey !== undefined)
     throw new Error("Amazon Bedrock SigV4 auth does not accept apiKey")
-  return configure({
+  return {
     apiKey: settings.auth === "sigv4" ? undefined : settings.apiKey,
     baseURL: settings.baseURL,
     credentials: settings.credentials,
@@ -64,5 +68,13 @@ export const model: ProviderPackage.Definition<Settings>["model"] = (modelID, se
     headers: settings.headers === undefined ? undefined : { ...settings.headers },
     http: settings.body === undefined ? undefined : { body: { ...settings.body } },
     region: settings.region,
-  }).model(modelID)
+  }
 }
+
+export const model: ProviderPackage.Definition<Settings>["model"] = (modelID, settings) =>
+  configure(config(settings)).model(modelID)
+export const messagesModel: ProviderPackage.Definition<
+  Settings & { readonly providerOptions?: AnthropicMessages.ProviderOptionsInput },
+  AnthropicMessages.ProviderOptionsInput
+>["model"] = (modelID, settings) =>
+  configure({ ...config(settings), providerOptions: settings.providerOptions }).messages(modelID)
