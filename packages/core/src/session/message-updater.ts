@@ -412,6 +412,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
               reason: event.data.reason,
               summary: event.data.text,
               recent: event.data.recent,
+              retained: event.data.retained,
             })
             return
           }
@@ -424,6 +425,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
               reason: event.data.reason,
               summary: event.data.text,
               recent: event.data.recent,
+              retained: event.data.retained,
               time: { created },
             }),
           )

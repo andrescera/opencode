@@ -101,10 +101,21 @@ test.each(["started", "cancelled", "failed"])(
       fixture.emit({
         ...event,
         type: "session.compaction.ended",
-        data: { sessionID, reason: "manual", text: "Summary", recent: "Recent" },
+        data: {
+          sessionID,
+          reason: "manual",
+          text: "Summary",
+          recent: "",
+          retained: { from: "msg_retained_user", through: "msg_retained_assistant" },
+        },
       })
       expect(fixture.data.session.message.list(sessionID)).toMatchObject([
-        { type: "compaction", status: "completed", summary: "Summary" },
+        {
+          type: "compaction",
+          status: "completed",
+          summary: "Summary",
+          retained: { from: "msg_retained_user", through: "msg_retained_assistant" },
+        },
       ])
     }
   },

@@ -3,13 +3,13 @@ title: "Compaction"
 ---
 
 Compaction replaces the active model context from an older part of a session
-with a generated checkpoint. The checkpoint contains a structured summary and
-a serialized tail of recent context, so the agent can continue with more room
+with a generated checkpoint. The checkpoint contains a summary and references
+to retained recent messages, so the agent can continue with more room
 in the model's context window.
 
 Compaction is lossy, but it does not delete the earlier durable session
 messages. After a successful compaction, V2 builds model requests from the
-latest completed checkpoint and the messages that follow it.
+latest completed checkpoint, its retained messages, and the messages that follow it.
 
 ## Automatic compaction
 
@@ -68,7 +68,7 @@ Add `compaction` to any [OpenCode configuration file](/config):
 | Field         | Default | V2 behavior                                                                                                                                   |
 | ------------- | ------: | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auto`        |  `true` | Enables preflight context-size checks and one-shot provider-overflow recovery. Disabling it does not affect manual compaction.                |
-| `keep.tokens` | `15000` | Approximate number of tokens from the newest serialized conversation context to retain beside the summary.                                    |
+| `keep.tokens` | `15000` | Approximate retention allowance used to select recent messages to keep after the summary.                                                     |
 | `buffer`      | `20000` | Safety reserve below an explicit input limit. Without one, it is the minimum context reserve and the model output allowance wins when larger. |
 
 `keep.tokens` and `buffer` accept non-negative integers. Larger `keep.tokens`
@@ -91,11 +91,15 @@ Provider-hosted tools remain subject to the selected provider's behavior.
 The summary records the objective, requirements, decisions, completed and active
 work, blockers, next moves, relevant files, and additional context.
 
-The newest serialized context up to `keep.tokens` is retained separately. This
-is not a byte-for-byte transcript: tool output is limited to 2000 characters,
-and file or media attachments become textual descriptors rather than embedded
-data. On later compactions, V2 updates the previous summary and carries forward
-its retained recent context before selecting a new tail.
+Recent messages are retained separately and pass through normal model-request
+conversion. Their roles, tool calls and results, attachments, and compatible
+reasoning metadata are preserved rather than flattened into summary text.
+Instruction updates already folded into the new baseline are not repeated.
+
+The existing selection heuristic estimates serialized text and aligns the cut
+to a user message, so `keep.tokens` is not a hard limit on the retained content.
+On later compactions, retained messages can become part of the next summarized
+prefix. Older checkpoints with serialized recent context remain readable.
 
 The completed compaction is presented to the model as historical conversation
 context, explicitly not as new instructions. Running and failed compactions are

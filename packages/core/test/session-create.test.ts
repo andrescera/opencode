@@ -1292,7 +1292,8 @@ describe("SessionTransfer", () => {
               status: "completed",
               reason: "manual",
               summary: "summary",
-              recent: "recent",
+              recent: "",
+              retained: { from: userID, through: completedShellID },
               time: { created: DateTime.makeUnsafe(9) },
             },
           ],
@@ -1307,6 +1308,15 @@ describe("SessionTransfer", () => {
         completedCompactionID,
       ])
       expect(yield* Bus.latestSequence(db, sessionID)).toBe(4)
+      expect((yield* session.context(sessionID)).map((message) => message.id)).toEqual([
+        completedCompactionID,
+        userID,
+        completedAssistantID,
+        completedShellID,
+      ])
+      expect((yield* transfer.export({ sessionID })).messages.at(-1)).toMatchObject({
+        retained: { from: userID, through: completedShellID },
+      })
     }),
   )
 

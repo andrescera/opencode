@@ -74,8 +74,8 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       yield* ConfigCompactionPlugin.Plugin.effect(host({ event: { subscribe: () => bus.subscribe(Event.Updated) } }))
 
       expect(compaction.required(nearInput)).toBe(false)
-      const started = yield* bus
-        .subscribe(SessionEvent.Compaction.Started)
+      const ended = yield* bus
+        .subscribe(SessionEvent.Compaction.Ended)
         .pipe(Stream.runHead, Effect.forkScoped({ startImmediately: true }))
       const messages = [
         SessionMessage.User.make({
@@ -100,7 +100,10 @@ describe("ConfigCompactionPlugin.Plugin", () => {
           inputID: SessionMessage.ID.make("msg_compaction_manual"),
         }),
       ).toEqual({ status: "completed" })
-      expect(Option.getOrThrow(yield* Fiber.join(started)).data.recent).toContain("Recent context")
+      expect(Option.getOrThrow(yield* Fiber.join(ended)).data).toMatchObject({
+        recent: "",
+        retained: { from: messages[1].id, through: messages[1].id },
+      })
 
       yield* config.setEntries([
         new Document({

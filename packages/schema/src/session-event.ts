@@ -587,6 +587,7 @@ export namespace Compaction {
       reason: Started.data.fields.reason,
       text: Schema.String,
       recent: Schema.String,
+      retained: SessionMessage.CompactionCompleted.fields.retained,
     },
   })
   export type Ended = typeof Ended.Type

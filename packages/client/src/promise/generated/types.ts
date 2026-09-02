@@ -147,6 +147,7 @@ export type SessionMessageCompactionCompleted = {
   reason: "auto" | "manual"
   summary: string
   recent: string
+  retained?: { from: string; through: string }
 }
 
 export type SessionActive = { type: "running" }
@@ -816,7 +817,13 @@ export type SessionCompactionEnded = {
   type: "session.compaction.ended"
   durable: { aggregateID: string; seq: number; version: 1 }
   location?: LocationRef
-  data: { sessionID: string; reason: "auto" | "manual"; text: string; recent: string }
+  data: {
+    sessionID: string
+    reason: "auto" | "manual"
+    text: string
+    recent: string
+    retained?: { from: string; through: string }
+  }
 }
 
 export type SessionCompactionFailed = {
@@ -3075,6 +3082,7 @@ export type SessionImportInput = {
               readonly reason: "auto" | "manual"
               readonly summary: string
               readonly recent: string
+              readonly retained?: { readonly from: string; readonly through: string }
             }
           | {
               readonly type: "compaction"
@@ -3352,6 +3360,7 @@ export type SessionImportInput = {
               readonly reason: "auto" | "manual"
               readonly summary: string
               readonly recent: string
+              readonly retained?: { readonly from: string; readonly through: string }
             }
           | {
               readonly type: "compaction"
@@ -3629,6 +3638,7 @@ export type SessionImportInput = {
               readonly reason: "auto" | "manual"
               readonly summary: string
               readonly recent: string
+              readonly retained?: { readonly from: string; readonly through: string }
             }
           | {
               readonly type: "compaction"

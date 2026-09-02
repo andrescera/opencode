@@ -179,6 +179,7 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
   if (event.data.instructionEntries)
     yield* InstructionEntry.initialize(db, event.data.sessionID, event.data.instructionEntries, event.created)
 
+  const messageIDs = new Map<SessionMessage.ID, SessionMessage.ID>()
   let cursor = -1
   while (copiedSeq !== undefined) {
     const rows = yield* db
@@ -201,18 +202,30 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
       .pipe(Effect.orDie)
     if (rows.length === 0) break
 
+    rows.forEach((row) =>
+      messageIDs.set(row.id, SessionMessage.ID.make(`${SessionMessage.ID.fromEvent(event.id)}_${row.seq}`)),
+    )
     yield* db
       .insert(SessionMessageTable)
       .values(
-        rows.map((row) => ({
-          id: SessionMessage.ID.make(`${SessionMessage.ID.fromEvent(event.id)}_${row.seq}`),
-          session_id: event.data.sessionID,
-          type: row.type,
-          seq: row.seq,
-          time_created: row.time_created,
-          time_updated: row.time_updated,
-          data: row.data,
-        })),
+        rows.map((row) => {
+          const message =
+            row.type === "compaction" ? decodeMessage({ ...row.data, id: row.id, type: row.type }) : undefined
+          const retained =
+            message?.type === "compaction" && message.status === "completed" ? message.retained : undefined
+          const from = retained && messageIDs.get(retained.from)
+          const through = retained && messageIDs.get(retained.through)
+          if (retained && (!from || !through)) throw new Error(`Compaction retained history was not copied: ${row.id}`)
+          return {
+            id: SessionMessage.ID.make(`${SessionMessage.ID.fromEvent(event.id)}_${row.seq}`),
+            session_id: event.data.sessionID,
+            type: row.type,
+            seq: row.seq,
+            time_created: row.time_created,
+            time_updated: row.time_updated,
+            data: from && through ? { ...row.data, retained: { from, through } } : row.data,
+          }
+        }),
       )
       .run()
       .pipe(Effect.orDie)

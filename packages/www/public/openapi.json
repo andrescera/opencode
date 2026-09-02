@@ -18221,6 +18221,21 @@
           },
           "recent": {
             "type": "string"
+          },
+          "retained": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "pattern": "^msg_"
+              },
+              "through": {
+                "type": "string",
+                "pattern": "^msg_"
+              }
+            },
+            "required": ["from", "through"],
+            "additionalProperties": false
           }
         },
         "required": ["type", "id", "time", "status", "reason", "summary", "recent"],

@@ -126,8 +126,10 @@ export interface Interface extends State.Transformable<Draft> {
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCompaction") {}
 
 export const estimateTokens = (input: RequiredInput) => {
+  const through = compactedThrough(input.messages)
   const index = input.messages.findLastIndex(
-    (message) =>
+    (message, index) =>
+      index > through &&
       message.type === "assistant" &&
       !message.error &&
       message.tokens !== undefined &&
@@ -255,9 +257,16 @@ const serializeRecentMessage = (message: SessionMessage.Info) => {
 const splitHistory = (messages: readonly SessionMessage.Info[], keepTokens: number) => {
   const tailStart = findTailStart(messages, keepTokens)
   if (tailStart === undefined) return
+  // Messages after a delivered manual checkpoint already replay without a retained range.
+  const end = messages.findLastIndex((message) => message.type === "compaction" && message.status === "running")
+  const tail = messages
+    .slice(tailStart, end < 0 ? undefined : end)
+    .filter((message) => message.type !== "compaction" && message.type !== "system")
+  const first = tail.at(0)
+  const last = tail.at(-1)
   return {
     messages: messages.slice(0, tailStart),
-    recent: messages.slice(tailStart).map(serializeRecentMessage).filter(Boolean).join("\n\n"),
+    retained: first && last ? { from: first.id, through: last.id } : undefined,
   }
 }
 
@@ -291,7 +300,18 @@ const findTailStart = (messages: readonly SessionMessage.Info[], keepTokens: num
       message.type === "compaction" && message.status === "completed",
   )
   // Without an older retained tail to summarize, summarize everything and retain nothing.
-  return previousSummary?.recent ? conversation[0].index : messages.length
+  return previousSummary?.recent || previousSummary?.retained ? conversation[0].index : messages.length
+}
+
+// Usage on retained assistants still describes the larger, pre-compaction request.
+const compactedThrough = (messages: readonly SessionMessage.Info[]) => {
+  const index = messages.findLastIndex((message) => message.type === "compaction" && message.status === "completed")
+  const checkpoint = messages[index]
+  if (checkpoint?.type !== "compaction" || checkpoint.status !== "completed" || !checkpoint.retained) return index
+  return Math.max(
+    index,
+    messages.findIndex((message) => message.id === checkpoint.retained?.through),
+  )
 }
 
 export const buildPrompt = (update: boolean) => {
@@ -360,7 +380,7 @@ export const layer = Layer.effect(
         yield* bus.publish(SessionEvent.Compaction.Started, {
           sessionID: context.session.id,
           reason: input.reason,
-          recent: history.recent,
+          recent: "",
           inputID: input.inputID,
         })
 
@@ -483,7 +503,8 @@ export const layer = Layer.effect(
         sessionID: context.session.id,
         reason: input.reason,
         text: summary,
-        recent: history.recent,
+        recent: "",
+        retained: history.retained,
       })
       return { status: "completed" as const }
     })
@@ -492,8 +513,7 @@ export const layer = Layer.effect(
       const config = state.get()
       if (!config.auto) return false
       // Run the completed checkpoint before considering another automatic compaction.
-      const last = input.messages.at(-1)
-      if (last?.type === "compaction" && last.status === "completed") return false
+      if (input.messages.length > 0 && compactedThrough(input.messages) === input.messages.length - 1) return false
       const limit = input.resolved.limit
       const context = limit.context
       if (context <= 0) return false

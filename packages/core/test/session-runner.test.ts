@@ -36,6 +36,7 @@ import { Session } from "@opencode-ai/core/session"
 import { Snapshot } from "@opencode-ai/core/snapshot"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionCompaction } from "@opencode-ai/core/session/compaction"
+import { toLLMMessages } from "@opencode-ai/core/session/runner/to-llm-message"
 import { SessionInbox } from "@opencode-ai/core/session/inbox"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionModelTransport } from "@opencode-ai/core/session/model-transport"
@@ -2307,6 +2308,76 @@ describe("SessionRunnerLLM", () => {
     ).toHaveLength(1)
   })
 
+  scenario("preserves structured retained history through compaction, replay, and forks", function* (s) {
+    yield* s.llm.push(TestLLM.text("Older answer", "older-answer"))
+    yield* s.runPrompt("Older question ".repeat(700))
+    const recent = yield* s.session.prompt({
+      sessionID,
+      text: "Recent question",
+      files: [{ uri: "data:image/png;base64,aGVsbG8=", name: "hello.png" }],
+      resume: false,
+    })
+    yield* s.llm.push(
+      TestLLM.toolCalls(
+        LLMEvent.reasoningStart({ id: "retained-reasoning" }),
+        LLMEvent.reasoningDelta({ id: "retained-reasoning", text: "Retained reasoning" }),
+        LLMEvent.reasoningEnd({
+          id: "retained-reasoning",
+          providerMetadata: { fake: { signature: "retained-signature" } },
+        }),
+        LLMEvent.toolCall({ id: "call-retained", name: "echo", input: { text: "x".repeat(12_000) } }),
+      ),
+      TestLLM.textWithUsage("Recent answer", "recent-answer", 199_000),
+    )
+    const active = yield* s.resumePaused
+    s.systemBaseline = "Updated retained instructions"
+    yield* active.finish
+    const messages = yield* s.context
+    const retained = messages
+      .slice(messages.findIndex((message) => message.id === recent.id))
+      .filter((message) => message.type !== "system")
+    yield* s.llm.push(TestLLM.text("## Objective\n- Summary", "structured-summary"))
+    const compact = yield* s.session.compact({ sessionID })
+    const summarizing = yield* s.resumePaused
+    yield* s.bus.publish(SessionEvent.Synthetic, { sessionID, text: "Arrived during compaction" })
+    yield* summarizing.finish
+
+    const after = yield* s.context
+    expect(after[0]).toMatchObject({
+      id: compact.id,
+      type: "compaction",
+      status: "completed",
+      recent: "",
+      retained: { from: recent.id, through: retained.at(-1)?.id },
+    })
+    expect(after.slice(1, -1)).toEqual(retained)
+    expect(after.at(-1)).toMatchObject({ type: "synthetic", text: "Arrived during compaction" })
+    expect(after.some((message) => message.type === "system")).toBe(false)
+    yield* replaySessionProjection(sessionID)
+    expect(yield* s.context).toEqual(after)
+
+    s.requests.length = 0
+    yield* s.llm.push(TestLLM.text("Continued", "structured-continued"))
+    const continued = yield* s.runPrompt("Continue")
+    expect(s.requests).toHaveLength(1)
+    expect(s.requests[0].messages.slice(1, -2)).toEqual(
+      toLLMMessages(retained, { id: ID.make(model.id), providerID: Provider.ID.make(model.provider) }),
+    )
+    expect(userTexts(s.requests[0])[0]).not.toContain("<recent-context>")
+    expect(s.requests[0].system.map((part) => part.text)).toContain("Updated retained instructions")
+    expect(s.executions).toEqual(["x".repeat(12_000)])
+
+    const fork = yield* s.session.fork({ sessionID, boundary: { type: "before", messageID: continued.id } })
+    const copied = yield* s.session.context(fork.id)
+    expect(copied.slice(1).map(({ id, ...message }) => message)).toEqual(
+      after.slice(1).map(({ id, ...message }) => message),
+    )
+    expect(copied[0]).toMatchObject({ retained: { from: copied[1].id, through: copied.at(-2)?.id } })
+    yield* s.db.delete(SessionTable).where(eq(SessionTable.id, fork.id)).run()
+    yield* replaySessionProjection(fork.id)
+    expect(yield* s.session.context(fork.id)).toEqual(copied)
+  })
+
   scenario("automatically compacts into a completed summary and retained recent turn", function* (s) {
     const store = yield* SessionStore.Service
     yield* s.llm.push(TestLLM.textWithUsage("Earlier answer", "text-first", 3_950))
@@ -2318,20 +2389,22 @@ describe("SessionRunnerLLM", () => {
       TestLLM.text("## Objective\n- Preserve the task", "text-summary"),
       TestLLM.textWithUsage("Continued", "text-final", 3_950),
     )
-    yield* s.runPrompt("Recent exact request ".repeat(180))
+    const recent = yield* s.runPrompt("Recent exact request ".repeat(180))
 
     expect(s.requests).toHaveLength(2)
     expect(userTexts(s.requests[0]).at(-1)).toContain("## Objective")
-    expect(userTexts(s.requests[1])).toHaveLength(1)
+    expect(userTexts(s.requests[1])).toHaveLength(2)
     expect(userTexts(s.requests[1])[0]).toContain("<summary>\n## Objective\n- Preserve the task\n</summary>")
-    expect(userTexts(s.requests[1])[0]).toContain(`[User]: ${"Recent exact request ".repeat(180)}`)
+    expect(userTexts(s.requests[1])[0]).not.toContain("<recent-context>")
+    expect(userTexts(s.requests[1])[1]).toBe("Recent exact request ".repeat(180))
 
     const context = yield* store.context(sessionID)
-    expect(context.map((message) => message.type)).toEqual(["compaction", "assistant"])
+    expect(context.map((message) => message.type)).toEqual(["compaction", "user", "assistant"])
     expect(context[0]).toMatchObject({
       type: "compaction",
       summary: "## Objective\n- Preserve the task",
-      recent: `[User]: ${"Recent exact request ".repeat(180)}`,
+      recent: "",
+      retained: { from: recent.id, through: recent.id },
     })
 
     s.requests.length = 0
@@ -2340,16 +2413,17 @@ describe("SessionRunnerLLM", () => {
       TestLLM.text("## Objective\n- Preserve the updated task", "text-summary-2"),
       TestLLM.text("Continued again", "text-final-2"),
     )
-    yield* s.runPrompt("Newest exact request ".repeat(180))
+    const newest = yield* s.runPrompt("Newest exact request ".repeat(180))
 
     expect(s.requests).toHaveLength(2)
     expect(userTexts(s.requests[0])[0]).toContain("<summary>\n## Objective\n- Preserve the task\n</summary>")
-    expect(userTexts(s.requests[0])[0]).toContain("Recent exact request")
+    expect(userTexts(s.requests[0])).toContain("Recent exact request ".repeat(180))
     expect(userTexts(s.requests[0]).at(-1)).toBe(SessionCompaction.buildPrompt(true))
     expect((yield* store.context(sessionID))[0]).toMatchObject({
       type: "compaction",
       summary: "## Objective\n- Preserve the updated task",
-      recent: `[User]: ${"Newest exact request ".repeat(180)}`,
+      recent: "",
+      retained: { from: newest.id, through: newest.id },
     })
   })
 
@@ -2409,10 +2483,15 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(s.requests[2])[0]).toContain("<summary>\n## Objective\n- Recover overflow\n</summary>")
     expect(yield* s.context).toMatchObject([
       { type: "compaction", summary: "## Objective\n- Recover overflow" },
+      { type: "user", text: "Continue" },
       { type: "assistant", finish: "stop" },
     ])
     yield* replaySessionProjection(sessionID)
-    expect(yield* s.context).toMatchObject([{ type: "compaction" }, { type: "assistant", finish: "stop" }])
+    expect(yield* s.context).toMatchObject([
+      { type: "compaction" },
+      { type: "user", text: "Continue" },
+      { type: "assistant", finish: "stop" },
+    ])
   })
 
   scenario("refreshes preparation after overflow compaction without promoting new input", function* (s) {
@@ -2520,6 +2599,7 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(3)
     expect(yield* s.context).toMatchObject([
       { type: "compaction", summary: "## Objective\n- Recover unknown limit" },
+      { type: "user", text: "Continue" },
       { type: "assistant", finish: "stop" },
     ])
   })
@@ -2536,6 +2616,7 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(2)
     expect(yield* s.context).toMatchObject([
       { type: "compaction", summary: "## Objective\n- Recover undersized limit" },
+      { type: "user", text: "Continue" },
       { type: "assistant", finish: "stop" },
     ])
   })
@@ -2553,6 +2634,7 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(3)
     expect(yield* s.context).toMatchObject([
       { type: "compaction" },
+      { type: "user", text: "Continue" },
       { type: "assistant", finish: "error", error: { message: "prompt too long" } },
     ])
   })
@@ -2578,6 +2660,7 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(3)
     expect(yield* s.context).toMatchObject([
       { type: "compaction", summary: "## Objective\n- Recover raw overflow" },
+      { type: "user", text: "Continue" },
       { type: "assistant", finish: "stop" },
     ])
   })

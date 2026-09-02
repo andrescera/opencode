@@ -967,6 +967,7 @@ export type SessionLogOutput =
             readonly reason: "auto" | "manual"
             readonly text: string
             readonly recent: string
+            readonly retained?: { readonly from: SessionMessage.ID; readonly through: SessionMessage.ID } | undefined
           }
         }
       | {

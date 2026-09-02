@@ -1103,6 +1103,7 @@ export function createData(config: CreateDataInput) {
               reason: event.data.reason,
               summary: event.data.text,
               recent: event.data.recent,
+              retained: event.data.retained,
             })
             return
           }
@@ -1113,6 +1114,7 @@ export function createData(config: CreateDataInput) {
             reason: event.data.reason,
             summary: event.data.text,
             recent: event.data.recent,
+            retained: event.data.retained,
             time: { created: event.created },
           })
         })

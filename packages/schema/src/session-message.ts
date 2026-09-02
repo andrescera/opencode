@@ -251,7 +251,10 @@ export const CompactionCompleted = Schema.Struct({
   status: Schema.tag("completed"),
   reason: Schema.Literals(["auto", "manual"]),
   summary: Schema.String,
+  /** Legacy serialized tail. New checkpoints leave this empty and reference retained messages. */
   recent: Schema.String,
+  /** Original messages retained after the summary, inclusive of both boundaries. */
+  retained: Schema.Struct({ from: ID, through: ID }).pipe(optional),
 }).annotate({ identifier: "Session.Message.Compaction.Completed" })
 
 export interface CompactionFailed extends Schema.Schema.Type<typeof CompactionFailed> {}
