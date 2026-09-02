@@ -736,7 +736,7 @@ function MessageTimelineView(
                       />
                     </Show>
                   </Show>
-                  <Show when={sessionID()} keyed>
+                  <Show when={!parentID() && sessionID()} keyed>
                     {(id) => (
                       <Menu
                         gutter={6}
