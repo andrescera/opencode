@@ -100,6 +100,7 @@ describe("settings schema", () => {
         mobileDiffWrap: true,
         terminalPlacement: "side",
         followUpBehavior: "steer",
+        experimentalBrowser: true,
       },
       appearance: { fontSize: 14, mono: "", sans: "", terminal: "", tabLayout: "horizontal" },
       keybinds: {},
