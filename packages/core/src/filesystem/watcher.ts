@@ -36,6 +36,10 @@ export type WatchInput =
   | { readonly path: string; readonly type: "file" }
   | { readonly path: string; readonly type: "directory"; readonly ignore?: readonly string[] }
 
+// Vendored trees inside a watched root (a plugin's node_modules, a nested .git)
+// produce event blizzards that can never change what the root discovers.
+export const vendored: readonly string[] = ["node_modules", ".git", "**/{node_modules,.git}/**"]
+
 export type Subscription = {
   readonly unsubscribe: () => Promise<void>
   /** Backend name for logging, e.g. "node" or "fs-events". */

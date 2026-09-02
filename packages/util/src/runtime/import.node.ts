@@ -16,6 +16,19 @@ await new Script('import("node:module")', {
 }).runInThisContext()
 conditionHooks.deregister()
 
+// A query on a file: import makes Node evaluate a fresh copy of that file, but
+// the file's relative imports still resolve to their cached originals. Carry the
+// importer's query down so a re-imported entrypoint re-evaluates its whole local
+// module graph, not just its own file. Bare specifiers are untouched.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const result = nextResolve(specifier, context)
+    if (!context.parentURL || !/^\.\.?\//.test(specifier) || !result.url.startsWith("file:")) return result
+    const search = new URL(context.parentURL).search
+    return search ? { ...result, url: `${result.url}${search}` } : result
+  },
+})
+
 export async function importModule(specifier: string) {
   const imported = (await new Script(`import(${JSON.stringify(specifier)})`, {
     importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,

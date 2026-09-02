@@ -41,8 +41,10 @@ export const layer = Layer.effect(
     const configuredChanges = yield* PubSub.unbounded<void>()
     const watched = new Set<string>()
 
-    // Configured local plugin entrypoints can live outside config roots, where the
-    // config change feed cannot see them; watch those entrypoints directly.
+    // Configured local plugin directories can live outside config roots, where the
+    // config change feed cannot see them; watch those directories directly, with
+    // the same vendored-tree ignores as config roots, so a sibling module edit
+    // reloads the plugin exactly as it does under a config root.
     // Watches start on first sighting and are never torn down individually:
     // a stale watch after a config edit costs one deduped fs handle and a
     // no-op activation, and every watch dies with this layer's scope.
@@ -56,7 +58,11 @@ export const layer = Layer.effect(
         // The config change feed already covers {plugin,plugins} directories.
         if (isPluginSource(entries, operation.target)) continue
         watched.add(operation.target)
-        const updates = yield* watcher.subscribe({ path: operation.target, type: "file" })
+        const updates = yield* watcher.subscribe({
+          path: path.dirname(operation.target),
+          type: "directory",
+          ignore: Watcher.vendored,
+        })
         yield* updates.pipe(
           Stream.runForEach(() => PubSub.publish(configuredChanges, undefined)),
           Effect.catchCause((cause) =>
@@ -158,13 +164,7 @@ const scan = Effect.fn("ConfigPluginSource.scan")(function* (
   // Explicit config is applied last so it can remove auto-discovered packages.
   return yield* Effect.forEach([...discovered, ...resolved], (operation) => {
     if (operation.type === "remove" || !path.isAbsolute(operation.target)) return Effect.succeed(operation)
-    return fs.stat(operation.target).pipe(
-      Effect.map((info) => ({
-        ...operation,
-        mtime: Option.getOrElse(info.mtime, () => new Date(0)).getTime(),
-      })),
-      Effect.orElseSucceed(() => operation),
-    )
+    return PluginSourceDirectory.mtime(fs, operation.target).pipe(Effect.map((mtime) => ({ ...operation, mtime })))
   })
 })
 

@@ -301,9 +301,7 @@ export const layer = (options?: Options) =>
       const initial = yield* discover()
       let configs = initial
       const updates = yield* PubSub.unbounded<Watcher.Update>()
-      // Vendored trees inside config roots (a plugin's node_modules, a nested
-      // .git) produce event blizzards that can never change discovery output.
-      const ignore = ["node_modules", ".git", "**/{node_modules,.git}/**"]
+      const ignore = Watcher.vendored
       // Watch-once: roots leave discovery only by deletion, so a stale watch is
       // inert, bounded, and dies with this layer — and keeping a deleted root's
       // watch alive is exactly what makes its recreation observable.

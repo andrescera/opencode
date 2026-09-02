@@ -10,6 +10,7 @@ import { pathToFileURL } from "url"
 import type { ConfigPluginSource } from "../config/plugin/source.js"
 import type { Generation } from "../plugin.js"
 import { PluginPromise } from "./promise.js"
+import { PluginSourceDirectory } from "./source-directory.js"
 
 const Module = Schema.Struct({
   default: Schema.Union([
@@ -87,8 +88,9 @@ export const load = Effect.fn("PluginModule.load")(function* (
 })
 
 function localFeatures(entrypoint: string) {
-  if (!path.basename(entrypoint).startsWith("index.")) return Effect.succeed({})
-  return Effect.promise(() => readdir(path.dirname(entrypoint), { withFileTypes: true })).pipe(
+  const directory = PluginSourceDirectory.root(entrypoint)
+  if (!directory) return Effect.succeed({})
+  return Effect.promise(() => readdir(directory, { withFileTypes: true })).pipe(
     Effect.map((entries) => {
       const names = new Set(
         entries.filter((entry) => entry.isFile() || entry.isSymbolicLink()).map((entry) => entry.name),
