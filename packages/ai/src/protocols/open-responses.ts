@@ -304,10 +304,13 @@ export const OpenResponsesUsage = Schema.Struct({
 })
 type OpenResponsesUsage = Schema.Schema.Type<typeof OpenResponsesUsage>
 
+// Every output item carries a server-issued `id`; streamed part events
+// reference it through `item_id`.
+// https://www.openresponses.org/specification#extending-items
 export const StreamItem = Schema.StructWithRest(
   Schema.Struct({
     type: Schema.String,
-    id: Schema.optional(Schema.String),
+    id: Schema.String,
     call_id: Schema.optional(Schema.String),
     name: Schema.optional(Schema.String),
     arguments: Schema.optional(Schema.String),
@@ -416,14 +419,13 @@ export interface ParserState {
   readonly name: string
   readonly providerMetadataKey: string
   readonly tools: ToolStream.State<string>
-  // Call ids stay independent of item ids, which may be omitted or reused.
+  // Item ids are response-scoped identities. Keep completed ids tombstoned so
+  // reconnect replay cannot reopen fragments already emitted downstream.
   readonly completedTools: ReadonlySet<string>
   readonly hasFunctionCall: boolean
   readonly lifecycle: Lifecycle.State
   readonly outputItems: Readonly<Record<number, string>>
   readonly message: { readonly id: string; readonly phase: MessagePhase | null | undefined } | undefined
-  // Item ids are response-scoped identities. Keep completed ids tombstoned so
-  // reconnect replay cannot reopen fragments already emitted downstream.
   readonly completedMessages: ReadonlySet<string>
   readonly reasoningItems: Readonly<Record<string, ReasoningStreamItem>>
 }
@@ -875,9 +877,6 @@ export const providerMetadata = (state: ParserState, metadata: Record<string, un
   [state.providerMetadataKey]: metadata,
 })
 
-const isReasoningItem = (item: StreamItem): item is StreamItem & { type: "reasoning"; id: string } =>
-  item.type === "reasoning" && typeof item.id === "string"
-
 export type StepResult = readonly [ParserState, ReadonlyArray<LLMEvent>]
 
 const NO_EVENTS: StepResult["1"] = []
@@ -997,7 +996,7 @@ export const onReasoningDone = (state: ParserState, event: Event, itemID: string
   return onReasoningDelta(state, { ...event, delta: event.text }, itemID)
 }
 
-const reasoningMetadata = (state: ParserState, item: StreamItem & { id: string }) =>
+const reasoningMetadata = (state: ParserState, item: StreamItem) =>
   providerMetadata(state, { itemId: item.id, reasoningEncryptedContent: item.encrypted_content ?? null })
 
 // Responses APIs normally stream reasoning items in this order:
@@ -1012,16 +1011,16 @@ const reasoningMetadata = (state: ParserState, item: StreamItem & { id: string }
 // lifecycle ordered when a compatible provider omits or delays a part-done event.
 const onOutputItemAdded = (state: ParserState, event: Event): StepResult => {
   const item = event.item
-  if (item?.type === "message" && item.id !== undefined) {
-    const itemID = item.id
-    if (state.completedMessages.has(itemID)) return [state, NO_EVENTS]
+  if (!item) return [state, NO_EVENTS]
+  if (item.type === "message") {
+    if (state.completedMessages.has(item.id)) return [state, NO_EVENTS]
     const phase = messagePhase(item.phase)
     const completedMessages = new Set(state.completedMessages)
-    if (state.message !== undefined && state.message.id !== itemID) completedMessages.add(state.message.id)
+    if (state.message !== undefined && state.message.id !== item.id) completedMessages.add(state.message.id)
     // A new message closes earlier messages, including ones that never streamed.
     const events: LLMEvent[] = []
     const lifecycle = [...state.lifecycle.text]
-      .filter((id) => id !== itemID)
+      .filter((id) => id !== item.id)
       .reduce((lifecycle, id) => {
         completedMessages.add(id)
         const openPhase = state.message?.id === id ? state.message.phase : undefined
@@ -1038,14 +1037,14 @@ const onOutputItemAdded = (state: ParserState, event: Event): StepResult => {
         lifecycle,
         completedMessages,
         message: {
-          id: itemID,
-          phase: phase === undefined && state.message?.id === itemID ? state.message.phase : phase,
+          id: item.id,
+          phase: phase === undefined && state.message?.id === item.id ? state.message.phase : phase,
         },
       },
       events,
     ]
   }
-  if (item && isReasoningItem(item)) {
+  if (item.type === "reasoning") {
     if (state.reasoningItems[item.id] !== undefined) return [state, NO_EVENTS]
     const events: LLMEvent[] = []
     return [
@@ -1065,18 +1064,16 @@ const onOutputItemAdded = (state: ParserState, event: Event): StepResult => {
       events,
     ]
   }
-  if (item?.type !== "function_call" || !item.call_id) return [state, NO_EVENTS]
-  const id = item.id ?? item.call_id
-  if (Object.values(state.tools).some((tool) => tool?.id === item.call_id) || state.completedTools.has(item.call_id))
-    return [state, NO_EVENTS]
-  const metadata = item.id !== undefined ? providerMetadata(state, { itemId: item.id }) : undefined
+  if (item.type !== "function_call" || !item.call_id) return [state, NO_EVENTS]
+  if (state.tools[item.id] !== undefined || state.completedTools.has(item.id)) return [state, NO_EVENTS]
+  const metadata = providerMetadata(state, { itemId: item.id })
   const events: LLMEvent[] = []
   const lifecycle = Lifecycle.stepStart(state.lifecycle, events)
   return [
     {
       ...state,
       lifecycle,
-      tools: ToolStream.start(state.tools, id, {
+      tools: ToolStream.start(state.tools, item.id, {
         id: item.call_id,
         name: item.name ?? "",
         input: item.arguments ?? "",
@@ -1153,8 +1150,8 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
   if (!item) return [state, NO_EVENTS] satisfies StepResult
 
   if (item.type === "compaction") {
-    if (!item.id || typeof item.encrypted_content !== "string")
-      return yield* ProviderShared.eventError(state.id, "Compaction output is missing its id or encrypted content")
+    if (typeof item.encrypted_content !== "string")
+      return yield* ProviderShared.eventError(state.id, "Compaction output is missing its encrypted content")
     if (state.completedCompactions.has(item.id)) return [state, NO_EVENTS] satisfies StepResult
     const events: LLMEvent[] = []
     const lifecycle = Lifecycle.stepStart(state.lifecycle, events)
@@ -1171,7 +1168,7 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
     ] satisfies StepResult
   }
 
-  if (item.type === "message" && item.id !== undefined) {
+  if (item.type === "message") {
     if (state.completedMessages.has(item.id)) return [state, NO_EVENTS] satisfies StepResult
     const completedMessages = new Set(state.completedMessages)
     completedMessages.add(item.id)
@@ -1204,36 +1201,23 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
 
   if (item.type === "function_call") {
     if (!item.call_id || !item.name) return [state, NO_EVENTS] satisfies StepResult
-    const callID = item.call_id
-    if (state.completedTools.has(callID)) return [state, NO_EVENTS] satisfies StepResult
-    const metadata = item.id !== undefined ? providerMetadata(state, { itemId: item.id }) : undefined
-    const fallback = item.id ?? callID
-    // Match the pending tool by call id so item events that disagree on
-    // whether `item.id` is present still resolve the same call.
-    const registered =
-      state.tools[fallback] !== undefined
-        ? fallback
-        : Object.keys(state.tools).find((key) => state.tools[key]?.id === callID)
-    const id = registered ?? fallback
-    const tools =
-      registered !== undefined
-        ? state.tools
-        : ToolStream.start(state.tools, id, {
-            id: callID,
-            name: item.name,
-            providerMetadata: metadata,
-          })
+    if (state.completedTools.has(item.id)) return [state, NO_EVENTS] satisfies StepResult
+    const metadata = providerMetadata(state, { itemId: item.id })
+    const registered = state.tools[item.id] !== undefined
+    const tools = registered
+      ? state.tools
+      : ToolStream.start(state.tools, item.id, { id: item.call_id, name: item.name, providerMetadata: metadata })
     const result =
       item.arguments === undefined
-        ? yield* ToolStream.finish(state.id, tools, id)
-        : yield* ToolStream.finishWithInput(state.id, tools, id, item.arguments)
+        ? yield* ToolStream.finish(state.id, tools, item.id)
+        : yield* ToolStream.finishWithInput(state.id, tools, item.id, item.arguments)
     const events: LLMEvent[] = []
     const finished = result.events ?? []
     // A done-only call never streamed a start event, so open its lifecycle here.
     const resultEvents =
-      registered !== undefined || finished.length === 0
+      registered || finished.length === 0
         ? finished
-        : [LLMEvent.toolInputStart({ id: callID, name: item.name, providerMetadata: metadata }), ...finished]
+        : [LLMEvent.toolInputStart({ id: item.call_id, name: item.name, providerMetadata: metadata }), ...finished]
     const lifecycle = resultEvents.length ? Lifecycle.stepStart(state.lifecycle, events) : state.lifecycle
     events.push(...resultEvents)
     return [
@@ -1244,13 +1228,13 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
           resultEvents.some((event) => LLMEvent.is.toolCall(event) || LLMEvent.is.toolInputError(event)) ||
           state.hasFunctionCall,
         tools: result.tools,
-        completedTools: new Set([...state.completedTools, callID]),
+        completedTools: new Set([...state.completedTools, item.id]),
       },
       events,
     ] satisfies StepResult
   }
 
-  if (isReasoningItem(item)) {
+  if (item.type === "reasoning") {
     if (state.reasoningItems[item.id]?.open === false) return [state, NO_EVENTS] satisfies StepResult
     const metadata = reasoningMetadata(state, item)
     const summaryParts: ReadonlyArray<unknown> = Array.isArray(item.summary) ? item.summary : []
@@ -1335,20 +1319,15 @@ const onResponseFinish = Effect.fn("OpenResponses.onResponseFinish")(function* (
   const events: LLMEvent[] = []
   if (event.type === "response.completed") {
     for (const item of event.response?.output ?? []) {
-      if (item.type !== "compaction" && item.type !== "function_call") continue
-      if (item.type === "compaction") {
-        // Terminal recovery cannot insert a checkpoint before already-emitted content.
-        if (state.lifecycle.stepStarted && !state.completedCompactions.has(item.id ?? ""))
-          return yield* ProviderShared.eventError(
-            state.id,
-            "Cannot recover a compaction checkpoint after output has been emitted",
-          )
-      }
-      if (
-        item.type === "function_call" &&
-        (!item.call_id || !Object.values(current.tools).some((tool) => tool?.id === item.call_id))
-      )
-        continue
+      // Terminal recovery cannot insert a checkpoint before already-emitted content.
+      if (item.type === "compaction" && state.lifecycle.stepStarted && !state.completedCompactions.has(item.id))
+        return yield* ProviderShared.eventError(
+          state.id,
+          "Cannot recover a compaction checkpoint after output has been emitted",
+        )
+      const recoverable =
+        item.type === "compaction" || (item.type === "function_call" && current.tools[item.id] !== undefined)
+      if (!recoverable) continue
       const [next, emitted] = yield* onOutputItemDone(current, item)
       current = next
       events.push(...emitted)
@@ -1460,20 +1439,16 @@ export const step = (state: ParserState, input: Event) => {
       ? Effect.succeed(onReasoningSummaryPartDone(state, event))
       : ProviderShared.eventError(state.id, `${event.type} is missing item_id`)
   if (event.type === "response.output_item.added") {
-    if (event.item?.type === "message" && event.item.id === undefined)
-      return ProviderShared.eventError(state.id, `${event.type} message is missing id`)
     if (
-      event.item &&
-      isReasoningItem(event.item) &&
+      event.item?.type === "reasoning" &&
       state.reasoningItems[event.item.id] === undefined &&
       state.lifecycle.reasoning.size > 0
     )
       return ProviderShared.eventError(state.id, `${event.type} started reasoning before the previous item ended`)
-    const id = event.item?.id ?? (event.item?.type === "function_call" ? event.item.call_id : undefined)
     return Effect.succeed(
       onOutputItemAdded(
-        event.output_index !== undefined && id !== undefined
-          ? { ...state, outputItems: { ...state.outputItems, [event.output_index]: id } }
+        event.output_index !== undefined && event.item
+          ? { ...state, outputItems: { ...state.outputItems, [event.output_index]: event.item.id } }
           : state,
         event,
       ),
@@ -1483,11 +1458,7 @@ export const step = (state: ParserState, input: Event) => {
     return event.item_id !== undefined
       ? onFunctionCallArgumentsDelta(state, event)
       : ProviderShared.eventError(state.id, `${event.type} is missing item_id`)
-  if (event.type === "response.output_item.done") {
-    if (event.item?.type === "message" && event.item.id === undefined)
-      return ProviderShared.eventError(state.id, `${event.type} message is missing id`)
-    return onOutputItemDone(state, event.item)
-  }
+  if (event.type === "response.output_item.done") return onOutputItemDone(state, event.item)
   if (event.type === "response.completed" || event.type === "response.incomplete") return onResponseFinish(state, event)
   if (event.type === "response.failed") return providerFailure(event, `${state.name} response failed`)
   if (event.type === "error")

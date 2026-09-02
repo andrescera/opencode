@@ -131,6 +131,6 @@ testEffect(
       LLM.request({ model: OpenAI.configure({ apiKey: "test" }).responses("fixture"), prompt: "hello" }),
     ).pipe(Effect.flip)
     expect(error.reason._tag).toBe("InvalidProviderOutput")
-    expect(error.message).toContain("missing its id")
+    expect(error.message).toContain("Invalid openai/openai-responses stream event")
   }),
 )

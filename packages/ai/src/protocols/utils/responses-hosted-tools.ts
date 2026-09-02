@@ -4,7 +4,6 @@ import { OpenResponses } from "../open-responses.js"
 import { Lifecycle } from "./lifecycle.js"
 
 export type Item = OpenResponses.StreamItem & {
-  readonly id: string
   readonly status?: string
   readonly action?: unknown
   readonly queries?: unknown
@@ -28,7 +27,7 @@ export interface Definition {
 export type Definitions = Readonly<Record<string, Definition>>
 
 export const isItem = <Tools extends Definitions>(item: OpenResponses.StreamItem, tools: Tools): item is Item =>
-  item.type in tools && typeof item.id === "string" && item.id.length > 0
+  item.type in tools
 
 export const onDone: (
   state: OpenResponses.ParserState,
