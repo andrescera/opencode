@@ -7,7 +7,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Workspace } from "@opencode-ai/core/workspace"
 import type { Event } from "@opencode-ai/schema/event"
 import { LayerNode } from "@opencode-ai/util/effect/layer-node"
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect"
+import { Context, Deferred, Effect, Exit, Fiber, Layer, Logger, Schema, Scope, Stream } from "effect"
 import { z } from "zod"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
@@ -226,6 +226,66 @@ describe("Rpc", () => {
       })
     }),
   )
+
+  it.effect("fails in-process callers with a typed rpc.internal error for defects and undeclared errors", () => {
+    const logged: unknown[] = []
+    const logger = Logger.make((entry) => {
+      if (entry.logLevel === "Error") logged.push(entry.message)
+    })
+    return Effect.gen(function* () {
+      const rpc = yield* Rpc.Service
+      const Broken = Rpc.define({
+        id: "broken",
+        methods: {
+          dies: { input: z.undefined(), output: z.string() },
+          throws: { input: z.undefined(), output: z.string() },
+          raw: { input: z.undefined(), output: z.string() },
+          undeclared: { input: z.undefined(), output: z.string(), errors: { known: z.object({}) } },
+        },
+        events: {},
+      })
+      yield* rpc.register(Broken, {
+        dies: () => Effect.die(new Error("handler defect")),
+        throws: () => {
+          throw new Error("handler threw")
+        },
+        // @ts-expect-error the Promise adapter fails with raw thrown values that the types otherwise forbid
+        raw: () => Effect.fail(new Error("raw failure")),
+        // @ts-expect-error undeclared error names are rejected statically; the runtime contract is under test
+        undeclared: (_input, context) => Effect.fail(context.error("unknown", "Unknown")),
+      })
+      const client = rpc.client(Broken)
+      const internal = { type: "rpc.internal" as const, message: "RPC call failed" }
+
+      // Every path yields the same typed failure the HTTP handler already exposes, so callers can recover.
+      expect(yield* client.dies().pipe(Effect.flip)).toEqual(internal)
+      expect(yield* client.throws().pipe(Effect.flip)).toEqual(internal)
+      expect(yield* client.raw().pipe(Effect.flip)).toEqual(internal)
+      expect(yield* rpc.call(Broken.id, "dies", undefined).pipe(Effect.flip)).toEqual(internal)
+      expect(yield* client.undeclared().pipe(Effect.flip)).toEqual({
+        type: "rpc.internal",
+        message: "Undeclared RPC error: unknown",
+      })
+      expect(
+        yield* client.dies().pipe(
+          Effect.catchIf(
+            (error) => error.type === "rpc.internal",
+            (error) => Effect.succeed(`recovered:${error.type}`),
+          ),
+        ),
+      ).toBe("recovered:rpc.internal")
+      // Each conversion logs its cause once so the detail is not lost.
+      expect(logged).toHaveLength(6)
+      expect(logged[0]).toEqual([
+        "rpc handler failed",
+        { rpc: "broken", method: "dies", error: new Error("handler defect") },
+      ])
+      expect(logged[2]).toEqual([
+        "rpc handler failed",
+        { rpc: "broken", method: "raw", error: new Error("raw failure") },
+      ])
+    }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])))
+  })
 
   it.effect("keeps other event consumers running after one subscription ends", () =>
     Effect.gen(function* () {

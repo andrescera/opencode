@@ -80,6 +80,7 @@ it.live("dispatches RPC wrappers with query, header and default locations and ge
           errors: { rejected: Schema.Struct({ reason: Schema.String }) },
         },
         defect: { input: Schema.Undefined, output: Schema.String },
+        undeclared: { input: Schema.Undefined, output: Schema.String },
         invalid: { input: Schema.Undefined, output: { type: "string" } },
       },
       events: {},
@@ -95,7 +96,9 @@ it.live("dispatches RPC wrappers with query, header and default locations and ge
               empty: () => Effect.succeed(undefined),
               fail: (_input, context) =>
                 Effect.fail(context.error("rejected", "handler failed", { reason: "declared" })),
-              defect: () => Effect.die(new Error("handler defect")),
+              defect: () => Effect.die(new Error("secret handler detail")),
+              // @ts-expect-error undeclared error names are rejected statically; the runtime contract is under test
+              undeclared: (_input, context) => Effect.fail(context.error("surprise", "undeclared failure")),
               invalid: () => Effect.succeed(123),
             })
           }).pipe(Effect.orDie),
@@ -166,12 +169,20 @@ it.live("dispatches RPC wrappers with query, header and default locations and ge
           })
         }),
     )
+    // Handler exception text never reaches HTTP clients; the fixed message matches the in-process contract.
     const defect = yield* server.call("transport.echo/defect")
     expect(defect.status).toBe(500)
     expect(yield* Effect.promise(() => defect.json())).toEqual({
       _tag: "RpcInternalError",
       type: "rpc.internal",
-      message: "handler defect",
+      message: "RPC call failed",
+    })
+    const undeclared = yield* server.call("transport.echo/undeclared")
+    expect(undeclared.status).toBe(500)
+    expect(yield* Effect.promise(() => undeclared.json())).toEqual({
+      _tag: "RpcInternalError",
+      type: "rpc.internal",
+      message: "Undeclared RPC error: surprise",
     })
     const invalid = yield* server.call("transport.echo/invalid")
     expect(invalid.status).toBe(500)

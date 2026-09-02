@@ -117,11 +117,29 @@ const layer = Layer.effect(
       const parsed = yield* parse(method.input, input).pipe(
         Effect.mapError((error) => failure("rpc.invalid_input", errorMessage(error, "Invalid RPC input"))),
       )
+      // Handler defects and undeclared errors become the same typed rpc.internal failure the HTTP handler
+      // exposes, so an in-process plugin caller can recover exactly like a remote one.
+      const internal = (error: unknown, message = "RPC call failed") =>
+        Effect.logError("rpc handler failed", { rpc: rpcID, method: name, error }).pipe(
+          Effect.andThen(Effect.fail(failure("rpc.internal", message))),
+        )
       const result = yield* Effect.suspend(() => {
         // The heterogeneous registry erases handlers after their selected schema validates input.
         const execution: Effect.Effect<unknown, unknown> = Reflect.apply(handler, undefined, [parsed, callContext])
         return execution
-      }).pipe(Effect.catch((error) => encodeError(method, error)))
+      }).pipe(
+        Effect.catch((error) => {
+          if (!(error instanceof DeclaredError)) return internal(error)
+          const declared = method.errors && Object.hasOwn(method.errors, error.type) && method.errors[error.type]
+          if (!declared) return internal(error, `Undeclared RPC error: ${error.type}`)
+          return encode(declared, error.data).pipe(
+            Effect.catch((cause) => Effect.die(cause)),
+            Effect.flatMap((data) => Effect.fail(failure(error.type, error.message, data))),
+          )
+        }),
+        // Also covers declared error data that fails its own schema: a handler bug, not a caller error.
+        Effect.catchDefect((defect) => internal(defect)),
+      )
       return yield* encode(method.output, result).pipe(
         Effect.mapError((error) => failure("rpc.invalid_output", errorMessage(error, "Invalid RPC output"))),
       )
@@ -213,17 +231,6 @@ function parse(schema: Tool.ValueSchema, value: unknown): Effect.Effect<unknown,
 
 function encode(schema: Tool.ValueSchema, value: unknown): Effect.Effect<unknown, unknown> {
   return Schema.isSchema(schema) ? Schema.encodeUnknownEffect(schema)(value) : parse(schema, value)
-}
-
-function encodeError(method: Rpc.Method, error: unknown): Effect.Effect<never, Rpc.Failure> {
-  if (!(error instanceof DeclaredError)) return Effect.die(error)
-  if (!method.errors || !Object.hasOwn(method.errors, error.type)) {
-    return Effect.die(new Error(`Undeclared RPC error: ${error.type}`))
-  }
-  return encode(method.errors[error.type], error.data).pipe(
-    Effect.catch((cause) => Effect.die(cause)),
-    Effect.flatMap((data) => Effect.fail(failure(error.type, error.message, data))),
-  )
 }
 
 function decodeError(method: Rpc.Method, error: Rpc.Failure): Effect.Effect<never, Rpc.Failure> {

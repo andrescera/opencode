@@ -75,7 +75,7 @@ describe("Promise plugin RPC", () => {
               message: "thrown failure",
               data: { attempts: 2 },
             })
-            await expect(client.defect()).rejects.toThrow("handler defect")
+            await expect(client.defect()).rejects.toEqual({ type: "rpc.internal", message: "RPC call failed" })
             await registration.dispose()
             await registration.dispose()
             await expect(client.ping()).rejects.toBeDefined()

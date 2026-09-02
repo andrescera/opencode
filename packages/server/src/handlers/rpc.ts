@@ -14,7 +14,7 @@ export const RpcHandler = HttpApiBuilder.group(Api, "server.rpc", (handlers) =>
       return output === undefined ? {} : { output }
     }).pipe(
       Effect.mapError((error) =>
-        error.type === "rpc.invalid_output"
+        error.type === "rpc.invalid_output" || error.type === "rpc.internal"
           ? new RpcInternalError({ type: error.type, message: error.message })
           : new RpcError({
               type: error.type,
@@ -22,12 +22,10 @@ export const RpcHandler = HttpApiBuilder.group(Api, "server.rpc", (handlers) =>
               ...(error.data === undefined ? {} : { data: error.data }),
             }),
       ),
-      Effect.catchDefect((error) =>
-        Effect.fail(
-          new RpcInternalError({
-            type: "rpc.internal",
-            message: error instanceof Error ? error.message : "RPC call failed",
-          }),
+      // Core already converts handler defects; this net catches anything else without echoing its text.
+      Effect.catchDefect((defect) =>
+        Effect.logError("rpc call failed", { rpc: params.rpcID, method: params.method, defect }).pipe(
+          Effect.andThen(Effect.fail(new RpcInternalError({ type: "rpc.internal", message: "RPC call failed" }))),
         ),
       ),
     ),
