@@ -1,3 +1,5 @@
+import fs from "fs/promises"
+import path from "path"
 import { describe, expect } from "bun:test"
 import { Duration, Effect, Layer, LayerMap } from "effect"
 import { define } from "@opencode-ai/plugin/effect/plugin"
@@ -5,6 +7,7 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/util/effect/layer-node"
 import { Global } from "@opencode-ai/util/global"
 import { Command } from "@opencode-ai/core/command"
+import { Config } from "@opencode-ai/core/config"
 import { Instance } from "@opencode-ai/core/instance"
 import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { Location } from "@opencode-ai/core/location"
@@ -27,12 +30,23 @@ const greeter = (command: string) =>
       ctx.command.transform((editor) => editor.add({ name: command, execute: () => Effect.void })).pipe(Effect.asVoid),
   })
 
+// A location named "file-plugin" configures a local plugin whose path is a file rather than a directory.
+const filePluginConfig: LayerNode.Replacements = [
+  Config.node.replace(
+    Config.configured({ project: false, global: false, content: JSON.stringify({ plugins: ["./plugins/foo.ts"] }) }),
+  ),
+]
+
 const instances = Layer.effect(
   LocationServiceMap.Service,
   Effect.gen(function* () {
     const map = yield* LayerMap.make(
       (ref: Location.Ref) =>
-        Instance.layer(ref, { discovery: false, plugins: [greeter("instance-greet")], replacements: bindings }),
+        Instance.layer(ref, {
+          discovery: false,
+          plugins: [greeter("instance-greet")],
+          replacements: [...bindings, ...(path.basename(ref.directory) === "file-plugin" ? filePluginConfig : [])],
+        }),
       { idleTimeToLive: Duration.infinity },
     )
     const bindings: LayerNode.Replacements = [
@@ -92,6 +106,40 @@ describe("PluginSupervisor", () => {
       expect(
         state.inventory.some((plugin) => plugin.id?.startsWith("opencode.") && plugin.state.status === "active"),
       ).toBe(true)
+    }),
+  )
+
+  it.live("reports a configured plugin file as a failure instead of dropping it", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const root = path.join(directory.path, "file-plugin")
+      const target = path.join(root, "plugins", "foo.ts")
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, "export default { id: 'foo', setup: () => ({}) }\n")
+      })
+      const locations = yield* LocationServiceMap.Service
+      const state = yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        const commands = yield* Command.Service
+        return {
+          inventory: yield* plugins.list(),
+          instance: yield* commands.get("instance-greet"),
+        }
+      }).pipe(Effect.scoped, Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(root) }))))
+
+      // The directory-only rule stands; the rejected entry is reported rather than silently vanishing.
+      expect(state.inventory.filter((plugin) => plugin.source.type === "local")).toEqual([
+        {
+          source: { type: "local", path: target },
+          state: { status: "failed", error: `Configured plugin path must be a directory: ${target}` },
+          features: { server: true },
+        },
+      ])
+      // Other plugins still activate.
+      expect(state.instance).toBeDefined()
+      expect(state.inventory.some((plugin) => plugin.id === id && plugin.state.status === "active")).toBe(true)
     }),
   )
 })

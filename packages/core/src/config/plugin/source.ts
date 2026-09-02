@@ -23,6 +23,12 @@ export type Operation =
       readonly type: "remove"
       readonly target: string
     }
+  // A configured entry rejected before loading; reported in the plugin inventory so it does not silently vanish.
+  | {
+      readonly type: "fail"
+      readonly target: string
+      readonly error: string
+    }
 
 export interface Interface {
   readonly operations: () => Effect.Effect<readonly Operation[], never, Scope.Scope>
@@ -143,21 +149,23 @@ const scan = Effect.fn("ConfigPluginSource.scan")(function* (
     )
   const resolved = yield* Effect.forEach(configured, (operation) =>
     Effect.gen(function* () {
-      if (operation.type === "remove" || !path.isAbsolute(operation.target)) return Option.some(operation)
+      if (operation.type === "remove" || !path.isAbsolute(operation.target)) return operation
+      const failed = (error: string): Operation => ({ type: "fail", target: operation.target, error })
+      // Configured local plugins must be directories so rpc.ts and tui.ts siblings resolve beside index.ts.
       if (yield* fs.isFile(operation.target)) {
         yield* Effect.logWarning("configured plugin path must be a directory", { target: operation.target })
-        return Option.none<Operation>()
+        return failed(`Configured plugin path must be a directory: ${operation.target}`)
       }
-      if (!(yield* fs.isDir(operation.target))) return Option.some<Operation>(operation)
+      if (!(yield* fs.isDir(operation.target))) return operation
       const entrypoint = yield* PluginSourceDirectory.entrypoint(fs, operation.target)
-      if (Option.isSome(entrypoint)) return Option.some<Operation>({ ...operation, target: entrypoint.value })
+      if (Option.isSome(entrypoint)) return { ...operation, target: entrypoint.value }
       yield* Effect.logWarning("configured plugin directory has no index entrypoint", { target: operation.target })
-      return Option.none<Operation>()
+      return failed(`Configured plugin directory has no index.ts or index.js entrypoint: ${operation.target}`)
     }),
-  ).pipe(Effect.map((operations) => operations.flatMap(Option.toArray)))
+  )
   // Explicit config is applied last so it can remove auto-discovered packages.
   return yield* Effect.forEach([...discovered, ...resolved], (operation) => {
-    if (operation.type === "remove" || !path.isAbsolute(operation.target)) return Effect.succeed(operation)
+    if (operation.type !== "add" || !path.isAbsolute(operation.target)) return Effect.succeed(operation)
     return fs.stat(operation.target).pipe(
       Effect.map((info) => ({
         ...operation,

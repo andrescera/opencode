@@ -40,6 +40,14 @@ const resolve = Effect.fn("PluginSupervisor.resolve")(function* (
         .forEach((plugin) => enabled.delete(plugin.id))
       continue
     }
+    if (operation.type === "fail") {
+      failures.set(operation.target, {
+        source: pluginSource(operation.target),
+        state: { status: "failed", error: operation.error },
+        features: { server: true },
+      })
+      continue
+    }
 
     const matched = plugins().filter((plugin) => matches(operation.target, plugin.id))
     const selectsPlugins =
