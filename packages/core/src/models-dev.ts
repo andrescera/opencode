@@ -594,7 +594,11 @@ export const layer = (options?: Options) =>
       )
 
       const source = options?.url || defaultSource
-      const fetch = options?.fetch ?? true
+      // The CLI maps OPENCODE_DISABLE_MODELS_FETCH into options.fetch; the
+      // unconfigured default node (core tests, embedded hosts) reads it here so
+      // the env var disables the network fetch everywhere.
+      const disabled = process.env.OPENCODE_DISABLE_MODELS_FETCH
+      const fetch = options?.fetch ?? !(disabled === "1" || disabled?.toLowerCase() === "true")
       const userAgent = App.useragent(app)
       const key = cacheKey(source)
       const ttl = Duration.minutes(5)

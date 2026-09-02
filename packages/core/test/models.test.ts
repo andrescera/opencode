@@ -336,6 +336,25 @@ describe("ModelsDev Service", () => {
     }),
   )
 
+  // test/preload.ts sets OPENCODE_DISABLE_MODELS_FETCH=true for the whole run;
+  // the unconfigured default node must honor it so tests that boot the real
+  // Location graph never reach models.opencode.ai.
+  it.live("default node skips the background fetch when OPENCODE_DISABLE_MODELS_FETCH is set", () =>
+    Effect.gen(function* () {
+      expect(process.env.OPENCODE_DISABLE_MODELS_FETCH).toBe("true")
+      const cache = makeCache()
+      const state = yield* Ref.make(initialState)
+      const layer = Layer.fresh(
+        AppNodeBuilder.build(ModelsDev.node, [
+          LayerNodePlatform.httpClient.replace(Layer.succeed(HttpClient.HttpClient, makeMockClient(state))),
+          KV.node.replace(makeMockKV(cache)),
+        ]),
+      )
+      yield* Effect.sleep("50 millis").pipe(Effect.provide(layer))
+      expect((yield* Ref.get(state)).calls).toEqual([])
+    }),
+  )
+
   it.live("get() is single-flight under concurrent calls", () =>
     Effect.gen(function* () {
       const cache = makeCache()
