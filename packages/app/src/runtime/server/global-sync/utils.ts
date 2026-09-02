@@ -138,3 +138,12 @@ export function normalizeProjectInfo(project: Project | CurrentProject): Project
     vcs: project.vcs === "git" ? "git" : undefined,
   }
 }
+
+export function updateProjectInfo(project: Project, update: CurrentProject): Project {
+  return {
+    ...project,
+    ...update,
+    worktree: update.canonical,
+    worktrees: project.worktrees,
+  }
+}
