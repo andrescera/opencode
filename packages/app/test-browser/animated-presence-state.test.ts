@@ -1,6 +1,8 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test, vi } from "bun:test"
 import { createAnimatedPresence } from "../src/runtime/animated-presence"
 import { batch, createRoot, createSignal } from "solid-js"
+
+afterEach(() => vi.useRealTimers())
 
 test("animates visibility changes without animating initial presence", () => {
   createRoot((dispose) => {
@@ -63,6 +65,44 @@ test("does not animate visibility changes across identities", () => {
 
     setValue("visible")
     expect(presence.animate()).toBe(true)
+    dispose()
+  })
+})
+
+test("holds brief appearances until the minimum duration expires", () => {
+  vi.useFakeTimers()
+  createRoot((dispose) => {
+    const [value, setValue] = createSignal<string>()
+    const presence = createAnimatedPresence(value, () => null, undefined, 1000)
+
+    setValue("shell")
+    vi.advanceTimersByTime(100)
+    setValue(undefined)
+    expect(presence.show()).toBe(true)
+    expect(presence.value()).toBe("shell")
+
+    vi.advanceTimersByTime(899)
+    expect(presence.show()).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(presence.show()).toBe(false)
+    expect(presence.animate()).toBe(true)
+    dispose()
+  })
+})
+
+test("clears held appearances when identity changes", () => {
+  vi.useFakeTimers()
+  createRoot((dispose) => {
+    const [identity, setIdentity] = createSignal("session-a")
+    const [value, setValue] = createSignal<string>("shell")
+    const presence = createAnimatedPresence(value, () => null, identity, 1000)
+
+    setValue(undefined)
+    expect(presence.show()).toBe(true)
+    setIdentity("session-b")
+    expect(presence.show()).toBe(false)
+    expect(presence.animate()).toBe(false)
+    expect(presence.value()).toBeUndefined()
     dispose()
   })
 })
